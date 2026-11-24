@@ -6,6 +6,8 @@ import html
 import json
 import os
 import re
+import stat
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -237,6 +239,30 @@ def _open_directory_nofollow(path: Path) -> int:
         raise
 
 
+def _holds_bytes(directory_fd: int, name: str, body: bytes) -> bool:
+    """True when ``name`` in the directory is a regular file (not a symlink) holding exactly ``body``."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+    except OSError:
+        return False
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            return False
+        return stream.read(len(body) + 1) == body
+
+
+def _prune_files(directory_fd: int, max_age_seconds: float) -> None:
+    """Remove regular files older than ``max_age_seconds``; symlinks and subdirectories are left alone."""
+    cutoff = time.time() - max_age_seconds
+    for name in os.listdir(directory_fd):
+        try:
+            info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                os.unlink(name, dir_fd=directory_fd)
+        except OSError:
+            pass
+
+
 class FreshdeskClient:
     """Dependency-free, bounded client for the Freshdesk v2 API."""
 
@@ -270,7 +296,7 @@ class FreshdeskClient:
         self._headers = {
             "Authorization": f"Basic {credential}",
             "Accept": "application/json",
-            "User-Agent": "Hermes-Freshdesk-Connector/0.2.0",
+            "User-Agent": "Freshdesk-Connector/0.2.1",
         }
         self._transport = transport or _default_transport
         self._bounded_transport = transport is None
@@ -429,7 +455,11 @@ class FreshdeskClient:
             return "s3"
         raise ValueError("attachment URL is outside the permitted Freshdesk/S3 origins")
 
-    def download_attachment(self, ticket_id: int, attachment_id: int, directory: Path) -> Path:
+    def download_attachment(
+        self, ticket_id: int, attachment_id: int, directory: Path, prune_older_than: float | None = None
+    ) -> Path:
+        """Save an attachment as ``<attachment_id>-<name>``. Downloading the same bytes again returns the existing file.
+        With ``prune_older_than`` (seconds), older files in the directory are removed first."""
         ticket_id = _positive_int(ticket_id, "ticket_id")
         attachment_id = _positive_int(attachment_id, "attachment_id")
         attachment = self._find_attachment(ticket_id, attachment_id)
@@ -451,11 +481,16 @@ class FreshdeskClient:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         directory_fd = _open_directory_nofollow(directory)
+        if prune_older_than is not None:
+            _prune_files(directory_fd, prune_older_than)
         try:
             descriptor = os.open(safe_name, flags, 0o600, dir_fd=directory_fd)
         except FileExistsError:
+            same = _holds_bytes(directory_fd, safe_name, body)
             os.close(directory_fd)
-            raise FreshdeskError("attachment destination already exists") from None
+            if same:
+                return destination
+            raise FreshdeskError("attachment destination already exists with different content") from None
         except OSError as exc:
             os.close(directory_fd)
             raise FreshdeskError(f"attachment destination could not be created: {type(exc).__name__}") from None

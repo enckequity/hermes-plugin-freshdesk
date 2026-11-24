@@ -1208,5 +1208,84 @@ class ApprovalReadbackTests(unittest.TestCase):
         self.assertNotEqual(message.strip(), "Update")
 
 
+class WhiteLabelAndCacheTests(unittest.TestCase):
+    """Model-facing text names no host app; re-downloads and the attachment cache behave."""
+
+    def test_tool_text_and_user_agent_name_no_host_app(self):
+        for _, schema, _ in freshdesk_connector._TOOLS:
+            self.assertNotIn("Hermes", schema["description"])
+        client = FreshdeskClient("acme", "key", transport=FakeTransport([]))
+        self.assertNotIn("Hermes", client._headers["User-Agent"])
+
+    def test_reply_card_shows_a_longer_excerpt_within_the_cap(self):
+        current = {"subject": "y" * 2000, "status": 2, "priority": 3}
+        body = "word " * 400
+        with mock.patch.object(freshdesk_connector, "_preview_ticket", lambda tid: current):
+            message = freshdesk_connector._approval_hook("freshdesk_reply_to_ticket", {"ticket_id": 123456, "body": body})["message"]
+        self.assertLessEqual(len(message), 450)
+        line = next(x for x in message.splitlines() if x.startswith("Body: "))
+        self.assertEqual(len(line), len("Body: ") + 250)
+        self.assertTrue(line.endswith("..."))
+
+    def _client(self, payload):
+        url = "https://acme.freshdesk.com/helpdesk/attachments/x"
+        return FreshdeskClient("acme", "key", transport=FakeTransport([
+            response(200, _ticket(5, [_attachment(7, url, "x.pdf")])), response(200, payload),
+        ]))
+
+    def test_same_bytes_again_returns_the_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._client(b"same").download_attachment(5, 7, Path(tmp))
+            again = self._client(b"same").download_attachment(5, 7, Path(tmp))
+            self.assertEqual(first, again)
+            self.assertEqual(again.read_bytes(), b"same")
+            with self.assertRaisesRegex(FreshdeskError, "already exists with different content"):
+                self._client(b"other").download_attachment(5, 7, Path(tmp))
+            self.assertEqual(first.read_bytes(), b"same")
+
+    def test_existing_symlink_is_never_followed_or_reused(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "secret"
+            target.write_bytes(b"same")
+            (Path(tmp) / "7-x.pdf").symlink_to(target)
+            with self.assertRaisesRegex(FreshdeskError, "already exists"):
+                self._client(b"same").download_attachment(5, 7, Path(tmp))
+
+    def test_prune_removes_only_old_regular_files(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            old, fresh = root / "1-old.pdf", root / "2-fresh.pdf"
+            old.write_bytes(b"o")
+            fresh.write_bytes(b"f")
+            kept = Path(outside) / "kept"
+            kept.write_bytes(b"k")
+            (root / "3-link").symlink_to(kept)
+            (root / "sub").mkdir()
+            week = 7 * 24 * 3600
+            os.utime(old, (0, 0))
+            os.utime(kept, (0, 0))
+            os.utime(root / "sub", (0, 0))
+            saved = self._client(b"new").download_attachment(5, 7, root, prune_older_than=week)
+            self.assertFalse(old.exists())
+            self.assertTrue(fresh.exists() and saved.exists() and kept.exists())
+            self.assertTrue((root / "3-link").is_symlink() and (root / "sub").is_dir())
+
+    def test_download_tool_prunes_the_workspace_cache(self):
+        seen = {}
+
+        class Client:
+            def download_attachment(self, ticket_id, attachment_id, directory, prune_older_than=None):
+                seen.update(directory=directory, prune=prune_older_than)
+                path = Path(tmp) / "f"
+                path.write_bytes(b"x")
+                return path
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(freshdesk_connector, "_client", lambda: Client()), \
+                mock.patch.dict(os.environ, {"HERMES_HOME": tmp}):
+            json.loads(freshdesk_connector._download_attachment({"ticket_id": 5, "attachment_id": 7}))
+        self.assertEqual(seen["prune"], 7 * 24 * 3600)
+        self.assertEqual(Path(seen["directory"]).parts[-2:], ("cache", "freshdesk"))
+
+
 if __name__ == "__main__":
     unittest.main()

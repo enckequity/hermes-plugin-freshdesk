@@ -1,4 +1,4 @@
-"""Hermes plugin entry point."""
+"""Plugin entry point."""
 
 from .freshdesk_connector import register
 

@@ -16,7 +16,7 @@ carries no tenant configuration, credentials, or ticket data.
 - `freshdesk_search_tickets` — read-only search by `status` (2-5), `priority` (1-4), `tag`, `type`, `agent_id`, `group_id`, or `created_at`/`updated_at` date ranges. At least one filter is required; the query is built and URL-encoded by the client.
 - `freshdesk_list_conversations` — fetch a bounded complete conversation list.
 - `freshdesk_get_contact` — fetch one contact by ID.
-- `freshdesk_download_attachment` — resolve an attachment by ticket and attachment ID, then download it from the Freshdesk CDN/S3 origin to the Hermes cache. No caller-controlled URL.
+- `freshdesk_download_attachment` — resolve an attachment by ticket and attachment ID, then download it from the Freshdesk CDN/S3 origin to the workspace cache (`cache/freshdesk`, files older than a week are removed on each download). No caller-controlled URL.
 - `freshdesk_add_private_note` — write a plain-text private note (HTML-escaped), then verify it through conversations.
 - `freshdesk_create_ticket` — create a basic ticket from plain text. The description is HTML-escaped before it is sent, then verified against `description_text`.
 - `freshdesk_reply_to_ticket` — send a public reply to the requester of a ticket. The approval Reason includes the reply text.

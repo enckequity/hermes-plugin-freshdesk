@@ -1,4 +1,4 @@
-"""Hermes plugin entry point for the generic Freshdesk v2 connector."""
+"""Plugin entry point for the generic Freshdesk v2 connector."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _available() -> bool:
 
 def _client() -> FreshdeskClient:
     if get_secret is None:
-        raise RuntimeError("Hermes secret scope is not available")
+        raise RuntimeError("secret scope is not available")
     domain = get_secret("FRESHDESK_DOMAIN")
     api_key = get_secret("FRESHDESK_API_KEY")
     if not domain or not api_key:
@@ -57,6 +57,12 @@ def _result(call: Callable[[], Any]) -> str:
         })
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc), "error_type": type(exc).__name__})
+
+
+# The text a reply or note sends is shown at this length (titles and fields stay at 100), still inside the 450 cap.
+_BODY_EXCERPT = 250
+# Downloaded attachments are kept for a week; each download removes older ones from cache/freshdesk.
+_CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 
 _STATUS_LABELS = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
@@ -209,7 +215,7 @@ def _approval_message_add_private_note(args: dict) -> str:
         header = f"{header}: {subject}"
     lines = [header]
     if isinstance(body, str) and body.strip():
-        lines.append(f"Note: {_excerpt(body)}")
+        lines.append(f"Note: {_excerpt(body, _BODY_EXCERPT)}")
     return "\n".join(lines)
 
 
@@ -223,7 +229,7 @@ def _approval_message_reply_to_ticket(args: dict) -> str:
         header = f"{header}: {subject}"
     lines = [header, "This emails the requester."]
     if isinstance(body, str) and body.strip():
-        lines.append(f"Body: {_excerpt(body)}")
+        lines.append(f"Body: {_excerpt(body, _BODY_EXCERPT)}")
     return "\n".join(lines)
 
 
@@ -329,7 +335,8 @@ def _download_attachment(args: dict, **_: Any) -> str:
         except ImportError:
             root = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
         path = _client().download_attachment(
-            args.get("ticket_id"), args.get("attachment_id"), root / "cache" / "freshdesk"
+            args.get("ticket_id"), args.get("attachment_id"), root / "cache" / "freshdesk",
+            prune_older_than=_CACHE_MAX_AGE_SECONDS,
         )
         return {"path": str(path), "bytes": path.stat().st_size}
 
@@ -503,7 +510,7 @@ _TOOLS = (
         "freshdesk_download_attachment",
         _schema(
             "freshdesk_download_attachment",
-            "Download a trusted Freshdesk attachment for a ticket into the Hermes cache. "
+            "Download a trusted Freshdesk attachment for a ticket into the workspace cache. "
             "The attachment is resolved from the ticket and its conversations; only Freshdesk "
             "and Freshdesk CDN/S3 origins are permitted.",
             {"ticket_id": _ID, "attachment_id": _ID},
@@ -515,7 +522,7 @@ _TOOLS = (
         "freshdesk_add_private_note",
         _schema(
             "freshdesk_add_private_note",
-            "Add a private note and verify it by reading the ticket conversations. Hermes requires human approval before execution.",
+            "Add a private note and verify it by reading the ticket conversations. Requires human approval before execution.",
             {"ticket_id": _ID, "body": {"type": "string"}},
             ["ticket_id", "body"],
         ),
@@ -525,7 +532,7 @@ _TOOLS = (
         "freshdesk_create_ticket",
         _schema(
             "freshdesk_create_ticket",
-            "Create a Freshdesk ticket and verify it by reading it back. Hermes requires human approval before execution.",
+            "Create a Freshdesk ticket and verify it by reading it back. Requires human approval before execution.",
             {"fields": _CREATE_FIELDS},
             ["fields"],
         ),
@@ -535,7 +542,7 @@ _TOOLS = (
         "freshdesk_reply_to_ticket",
         _schema(
             "freshdesk_reply_to_ticket",
-            "Send a public reply to the requester of a Freshdesk ticket. Hermes requires human approval before execution.",
+            "Send a public reply to the requester of a Freshdesk ticket. Requires human approval before execution.",
             {"ticket_id": _ID, "body": {"type": "string"}},
             ["ticket_id", "body"],
         ),
@@ -545,7 +552,7 @@ _TOOLS = (
         "freshdesk_add_time_entry",
         _schema(
             "freshdesk_add_time_entry",
-            "Add a finished time entry to a Freshdesk ticket. Hermes requires human approval before execution.",
+            "Add a finished time entry to a Freshdesk ticket. Requires human approval before execution.",
             {
                 "ticket_id": _ID,
                 "time_spent": _TIME_SPENT,
@@ -561,7 +568,7 @@ _TOOLS = (
         "freshdesk_update_ticket",
         _schema(
             "freshdesk_update_ticket",
-            "Update a Freshdesk ticket's status (2-5) and/or priority (1-4). Hermes requires human approval before execution.",
+            "Update a Freshdesk ticket's status (2-5) and/or priority (1-4). Requires human approval before execution.",
             {"ticket_id": _ID, "status": _STATUS, "priority": _PRIORITY},
             ["ticket_id"],
         ),
