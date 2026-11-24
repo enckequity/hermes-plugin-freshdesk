@@ -7,9 +7,9 @@ versions track the `plugin.yaml` version.
 
 ### Changed
 
-- Tool descriptions and errors no longer name the host app ("Requires human approval before execution."), and the User-Agent is `Freshdesk-Connector/0.2.1`.
+- Tool descriptions and errors no longer name the host app ("Requires human approval before execution."), and the User-Agent is `Helpdesk-Connector/0.2.1`.
 - Reply and private-note approval cards show the first 250 characters of the text (was 100), still within the 450-character card cap.
-- `freshdesk_download_attachment`: downloading the same bytes again returns the existing file instead of an error; different bytes under the same name still fail. Each download removes files older than a week from `cache/freshdesk` (regular files only; symlinks and directories are left alone).
+- `freshdesk_download_attachment`: downloading the same bytes again returns the existing file instead of an error; different bytes under the same name still fail. Each download removes files older than a week from `cache/freshdesk` (regular files only; symlinks and directories are left alone). Downloads are written under a temporary name and linked into place, so an interrupted or concurrent download never leaves a partial file under the final name.
 
 ## 0.2.0
 

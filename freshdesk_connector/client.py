@@ -242,7 +242,10 @@ def _open_directory_nofollow(path: Path) -> int:
 def _holds_bytes(directory_fd: int, name: str, body: bytes) -> bool:
     """True when ``name`` in the directory is a regular file (not a symlink) holding exactly ``body``."""
     try:
-        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        if not stat.S_ISREG(os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode):
+            return False  # a symlink, FIFO or device is never opened
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
     except OSError:
         return False
     with os.fdopen(descriptor, "rb") as stream:
@@ -296,7 +299,7 @@ class FreshdeskClient:
         self._headers = {
             "Authorization": f"Basic {credential}",
             "Accept": "application/json",
-            "User-Agent": "Freshdesk-Connector/0.2.1",
+            "User-Agent": "Helpdesk-Connector/0.2.1",
         }
         self._transport = transport or _default_transport
         self._bounded_transport = transport is None
@@ -481,28 +484,32 @@ class FreshdeskClient:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         directory_fd = _open_directory_nofollow(directory)
-        if prune_older_than is not None:
-            _prune_files(directory_fd, prune_older_than)
         try:
-            descriptor = os.open(safe_name, flags, 0o600, dir_fd=directory_fd)
-        except FileExistsError:
-            same = _holds_bytes(directory_fd, safe_name, body)
-            os.close(directory_fd)
-            if same:
-                return destination
-            raise FreshdeskError("attachment destination already exists with different content") from None
-        except OSError as exc:
-            os.close(directory_fd)
-            raise FreshdeskError(f"attachment destination could not be created: {type(exc).__name__}") from None
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(body)
-        except Exception:
+            if prune_older_than is not None:
+                _prune_files(directory_fd, prune_older_than)
+            # Write under a short private name, then link it into place: a crash never leaves a partial file under the
+            # final name, and a concurrent download of the same attachment sees either nothing or the whole file.
+            temporary = f".{attachment_id}.{os.getpid()}.{os.urandom(4).hex()}.part"
             try:
-                os.unlink(safe_name, dir_fd=directory_fd)
-            except OSError:
-                pass
-            raise
+                descriptor = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
+            except OSError as exc:
+                raise FreshdeskError(f"attachment destination could not be created: {type(exc).__name__}") from None
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(body)
+                try:
+                    os.link(temporary, safe_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                except FileExistsError:
+                    if _holds_bytes(directory_fd, safe_name, body):
+                        return destination
+                    raise FreshdeskError("attachment destination already exists with different content") from None
+                except OSError as exc:
+                    raise FreshdeskError(f"attachment destination could not be created: {type(exc).__name__}") from None
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory_fd)
+                except OSError:
+                    pass
         finally:
             os.close(directory_fd)
         return destination

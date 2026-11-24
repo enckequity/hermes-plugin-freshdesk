@@ -1251,6 +1251,22 @@ class WhiteLabelAndCacheTests(unittest.TestCase):
             with self.assertRaisesRegex(FreshdeskError, "already exists"):
                 self._client(b"same").download_attachment(5, 7, Path(tmp))
 
+    def test_existing_fifo_is_never_opened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.mkfifo(Path(tmp) / "7-x.pdf")
+            with self.assertRaisesRegex(FreshdeskError, "already exists"):
+                self._client(b"same").download_attachment(5, 7, Path(tmp))
+            self.assertEqual(sorted(os.listdir(tmp)), ["7-x.pdf"])
+
+    def test_no_temporary_file_is_left_and_the_file_is_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = self._client(b"data").download_attachment(5, 7, Path(tmp))
+            self.assertEqual(os.listdir(tmp), ["7-x.pdf"])
+            self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o600)
+            with self.assertRaises(FreshdeskError):
+                self._client(b"other").download_attachment(5, 7, Path(tmp))
+            self.assertEqual(os.listdir(tmp), ["7-x.pdf"])
+
     def test_prune_removes_only_old_regular_files(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
             root = Path(tmp)
