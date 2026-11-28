@@ -2,7 +2,7 @@ name: freshdesk
 version: 0.2.1
 description: "Generic Freshdesk v2 tools."
 author: GFORGOV®
-kind: tools
+kind: standalone
 requires_hermes: ">=0.21.4"
 provides_hooks:
   - pre_tool_call
